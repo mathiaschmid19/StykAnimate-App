@@ -10,7 +10,7 @@ import { ProjectSession, SessionError } from './session.mjs';
 export function createServer(session = new ProjectSession({ root: process.env.STYK_MCP_DIR || process.cwd() })) {
   const server = new McpServer({ name: 'stykanimate', version: '0.1.0' }, {
     instructions: [
-      'Edits StykAnimate stick-figure animation projects (.styk files) headlessly.',
+      'Edits StykAnimate stick-figure animation projects (.styk files) headlessly. Use render_frame to look at the result.',
       'Coordinates are canvas pixels: x grows right, y grows down. Angles are degrees.',
       'Start with new_project or open_project, add figures, then for each pose: add_key at its frame and pose the joints. Finish with save_project.',
       'Call describe_scene after edits to see where every joint ended up.',
@@ -21,7 +21,7 @@ export function createServer(session = new ProjectSession({ root: process.env.ST
   const failure = (error) => ({ isError: true, content: [{ type: 'text', text: error.message }] });
   /** Wrap a handler so expected failures come back as readable tool errors. */
   const tool = (name, config, handler) => server.registerTool(name, config, async (args) => {
-    try { return text(await handler(args ?? {})); }
+    try { const result = await handler(args ?? {}); return result?.content ? result : text(result); }
     catch (error) { if (error instanceof SessionError) return failure(error); throw error; }
   });
   const uid = z.number().int().describe('Figure uid, from describe_scene or add_figure');
@@ -59,6 +59,30 @@ export function createServer(session = new ProjectSession({ root: process.env.ST
     description: 'Every figure at a frame (default: the current one) with each joint\'s start/end position in canvas pixels and angle in degrees.',
     inputSchema: { frame: z.number().int().min(0).optional() },
   }, ({ frame }) => session.describe(frame));
+
+  tool('render_frame', {
+    description: 'Draw a frame (default: the current one) and return it as an image so you can see the animation. Uses the same renderer as the app\'s SVG export. Use a smaller width to save tokens.',
+    inputSchema: {
+      frame: z.number().int().min(0).optional(),
+      width: z.number().int().min(64).max(4000).optional().describe('Image width in pixels (default: 640)'),
+    },
+  }, async ({ frame, width = 640 }) => {
+    const image = await session.renderFrame({ frame, width });
+    return { content: [
+      { type: 'image', data: Buffer.from(image.png).toString('base64'), mimeType: 'image/png' },
+      { type: 'text', text: `Frame ${image.frame} at ${image.width}x${image.height}` },
+    ] };
+  });
+
+  tool('export_frames', {
+    description: 'Write a range of frames as numbered PNG files (frame_0000.png, ...) into a folder inside the project folder. Combine them into a video or GIF with a tool such as ffmpeg: ffmpeg -framerate <fps> -i frame_%04d.png out.mp4',
+    inputSchema: {
+      folder: z.string().describe('Folder name inside the project folder'),
+      start: z.number().int().min(0).optional(),
+      end: z.number().int().min(0).optional().describe('Last frame (default: the last frame of the project)'),
+      width: z.number().int().min(64).max(4000).optional().describe('Image width in pixels (default: the canvas width)'),
+    },
+  }, (args) => session.exportFrames(args));
 
   tool('add_figure', {
     description: 'Add a figure to the current frame. Returns its uid.',

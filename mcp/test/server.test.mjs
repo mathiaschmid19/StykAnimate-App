@@ -26,7 +26,7 @@ test('lists the animation tools', async () => {
   const { client, close } = await connect();
   try {
     const names = (await client.listTools()).tools.map((tool) => tool.name);
-    for (const expected of ['new_project', 'open_project', 'save_project', 'describe_scene', 'add_figure', 'pose_joint', 'add_key', 'undo'])
+    for (const expected of ['new_project', 'open_project', 'save_project', 'describe_scene', 'add_figure', 'render_frame', 'export_frames', 'pose_joint', 'add_key', 'undo'])
       assert.ok(names.includes(expected), `missing ${expected}`);
   } finally { await close(); }
 });
@@ -57,5 +57,15 @@ test('mistakes are reported as tool errors, not protocol failures', async () => 
     assert.match(wrongFigure.text, /No figure with uid 42/);
     const escape = await call('save_project', { path: '../outside.styk' });
     assert.equal(escape.isError, true);
+  } finally { await close(); }
+});
+
+test('render_frame returns an image the assistant can look at', async () => {
+  const { client, close } = await connect();
+  try {
+    const result = await client.callTool({ name: 'render_frame', arguments: { width: 200 } });
+    const image = result.content.find((item) => item.type === 'image');
+    assert.equal(image.mimeType, 'image/png');
+    assert.deepEqual([...Buffer.from(image.data, 'base64').subarray(1, 4)], [80, 78, 71]);
   } finally { await close(); }
 });

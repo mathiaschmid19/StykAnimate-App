@@ -1,9 +1,22 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Editor } from '../src/editor.mjs';
+import { exportSVG } from '../src/svg-export.mjs';
 import { buildContainerV2, decodeDocument, normalizeDecodedDocument } from '../src/native-container.mjs';
 
 const RAD = Math.PI / 180;
+const MAX_EXPORT_FRAMES = 1000;
+
+/** The app's bundled SVG rasterizer, loaded once. */
+let resvgReady;
+function loadResvg() {
+  resvgReady ??= (async () => {
+    const resvg = await import('../vendor/resvg/index.mjs');
+    await resvg.initWasm(await fs.readFile(new URL('../vendor/resvg/index_bg.wasm', import.meta.url)));
+    return resvg;
+  })();
+  return resvgReady;
+}
 const round = (value) => Math.round(value * 100) / 100;
 
 /** A failure the assistant can act on: bad arguments, not a crash. */
@@ -132,6 +145,45 @@ export class ProjectSession {
       });
     }
     return { frame: editor.tick, canvas: { width: editor.report.canvas_width, height: editor.report.canvas_height }, figures };
+  }
+
+  /** Draw a frame exactly as the app's SVG export does, then rasterize it to PNG. */
+  async renderFrame({ frame, width } = {}) {
+    if (frame !== undefined) this.goToFrame(frame);
+    const { editor } = this;
+    const canvas = editor.report;
+    const svg = await exportSVG({
+      report: canvas, frame: editor.evaluatedFrame, frameIndex: editor.frameIndex, geometry: editor.geometry,
+      width: canvas.canvas_width, height: canvas.canvas_height,
+    });
+    const { Resvg } = await loadResvg();
+    const image = new Resvg(typeof svg === 'string' ? svg : await svg.text(), {
+      fitTo: { mode: 'width', value: width ?? canvas.canvas_width },
+    }).render();
+    return { frame: editor.tick, width: image.width, height: image.height, png: image.asPng() };
+  }
+
+  /** Write numbered PNGs to a folder inside the project folder, e.g. for ffmpeg or an image viewer. */
+  async exportFrames({ folder, start = 0, end, width } = {}) {
+    const { editor } = this;
+    const last = end ?? editor.totalTicks - 1;
+    if (typeof folder !== 'string' || !folder) throw new SessionError('Provide a folder name.');
+    const directory = path.resolve(this.root, folder);
+    const relative = path.relative(this.root, directory);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative))
+      throw new SessionError(`The folder must be inside ${this.root}.`);
+    if (!Number.isInteger(start) || !Number.isInteger(last) || start < 0 || last < start || last >= editor.totalTicks)
+      throw new SessionError(`Frames must satisfy 0 <= start <= end < ${editor.totalTicks}.`);
+    if (last - start + 1 > MAX_EXPORT_FRAMES) throw new SessionError(`Export at most ${MAX_EXPORT_FRAMES} frames at a time.`);
+    await fs.mkdir(directory, { recursive: true });
+    const resume = editor.tick;
+    try {
+      for (let frame = start; frame <= last; frame++) {
+        const { png } = await this.renderFrame({ frame, width });
+        await fs.writeFile(path.join(directory, `frame_${String(frame).padStart(4, '0')}.png`), png);
+      }
+    } finally { editor.seek(resume); }
+    return { folder: relative, frames: last - start + 1, fps: editor.report.fps, firstFile: `frame_${String(start).padStart(4, '0')}.png` };
   }
 
   figure(uid) {

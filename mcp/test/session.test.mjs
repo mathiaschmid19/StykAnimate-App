@@ -125,3 +125,33 @@ test('bad requests come back as errors the assistant can read', async () => {
     await assert.rejects(session.open('missing.styk'), SessionError);
   } finally { await cleanup(); }
 });
+
+test('rendering returns a PNG that changes as the animation moves', async () => {
+  const { session, cleanup } = await workspace();
+  try {
+    const [figure] = session.describe().figures;
+    session.addKey({ frame: 12 });
+    session.poseJoint({ uid: figure.uid, joint: 'Right forearm', x: 410, y: 180 });
+    const first = await session.renderFrame({ frame: 0, width: 320 });
+    const middle = await session.renderFrame({ frame: 6, width: 320 });
+    const last = await session.renderFrame({ frame: 12, width: 320 });
+    assert.deepEqual([...first.png.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10], 'PNG signature');
+    assert.equal(first.width, 320);
+    assert.notDeepEqual(first.png, middle.png);
+    assert.notDeepEqual(middle.png, last.png);
+  } finally { await cleanup(); }
+});
+
+test('export_frames writes a numbered PNG sequence and keeps the playhead', async () => {
+  const { session, root, cleanup } = await workspace();
+  try {
+    session.addKey({ frame: 3 });
+    session.goToFrame(2);
+    const result = await session.exportFrames({ folder: 'out/walk', start: 0, end: 3, width: 160 });
+    assert.equal(result.frames, 4);
+    assert.deepEqual(await fs.readdir(path.join(root, 'out/walk')), ['frame_0000.png', 'frame_0001.png', 'frame_0002.png', 'frame_0003.png']);
+    assert.equal(session.info().currentFrame, 2);
+    await assert.rejects(session.exportFrames({ folder: '../outside' }), /inside/);
+    await assert.rejects(session.exportFrames({ folder: 'x', start: 5, end: 2 }), SessionError);
+  } finally { await cleanup(); }
+});
